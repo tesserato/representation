@@ -17,18 +17,20 @@ def get_pcs(Xpc, W):
   # max_T = int(np.max(np.abs(Xpc[1:] - Xpc[:-1])))
   Xlocal = np.linspace(0, 1, mode(Xpc[1:] - Xpc[:-1]))
 
-  orig_pcs = []
+  lengths = []
+  amplitudes = []
   norm_pcs = []
   for i in range(2, Xpc.size):
     x0 = Xpc[i - 1]
     x1 = Xpc[i] + 1
-    orig_pcs.append(W[x0 : x1])
+    lengths.append(x1 - x0)
+    amplitudes.append(np.max(np.abs(W[x0 : x1])))
     if x1 - x0 >= 4:
       yx = interpolate.interp1d(np.linspace(0, 1, x1-x0), W[x0 : x1], "cubic")
       Ylocal = yx(Xlocal)
-      # Ylocal = Ylocal / np.max(np.abs(Ylocal)) * amp
+      Ylocal = Ylocal / np.max(np.abs(Ylocal))
       norm_pcs.append(Ylocal)
-  return np.average(np.array(norm_pcs), 0), orig_pcs, norm_pcs
+  return np.array(norm_pcs).astype(float), np.array(lengths).astype(float), np.array(amplitudes).astype(float)
 
 def get_loss_plot(Lx, Ly):
   FONT = dict(
@@ -65,27 +67,16 @@ class TwoLayerNet(torch.nn.Module):
   def __init__(self, D_in, H, D_out):
     super(TwoLayerNet, self).__init__()
     self.linear1 = torch.nn.Linear(D_in, H)
-    self.linear2 = torch.nn.Linear(H, H) 
-    self.linear3 = torch.nn.Linear(H, D_out)
-
-    # self.last_y_pred = None
-    # self.criterion = torch.nn.MSELoss()
-    # self.optimizer = torch.optim.Adagrad(self.parameters())
+    self.linear2 = torch.nn.Linear(H, H)
+    self.linear3 = torch.nn.Linear(H, H)
+    self.linear4 = torch.nn.Linear(H, D_out)
   
   def forward(self, x):
     h_relu = torch.tanh(2 * self.linear1(x))
     h_relu = torch.tanh(2 * self.linear2(h_relu))
-    y_pred = torch.tanh(2 * self.linear3(h_relu))
-    self.last_y_pred = y_pred
+    h_relu = torch.tanh(2 * self.linear3(h_relu))
+    y_pred = torch.tanh(2 * self.linear4(h_relu))
     return y_pred
-
-  # def backward(self, t):
-  #   loss = self.criterion(t, self.last_y_pred)
-  #   self.optimizer.zero_grad()
-  #   loss.backward()
-  #   self.optimizer.step()
-  #   return loss.data
-
 
 
 
@@ -101,27 +92,29 @@ n = W.size
 '''###### Read Pseudo-cycles info ######'''
 Xpc = np.genfromtxt(f"./csvs/{name}.csv", delimiter=",")
 
-average_waveform, orig_waveforms, norm_waveforms = get_pcs(Xpc, W)
+norm_waveforms, lengths, amplitudes = get_pcs(Xpc, W)
 
-norm_waveforms = np.array(norm_waveforms)
 
-# print(norm_waveforms.shape) # (number of pseudo cycles, length of each pseudo cycle)
 
-net = TwoLayerNet(1, 1000, norm_waveforms.shape[1])
 
-T = torch.from_numpy(norm_waveforms.astype(float)).type(torch.float)
-X = torch.linspace(0, 1, norm_waveforms.shape[0]).reshape(-1,1)
+max_len = np.max(lengths)
+max_amp = np.max(amplitudes)
+T = np.column_stack((norm_waveforms, lengths / max_len))
+T = np.column_stack((T, amplitudes / max_amp))
+
+net = TwoLayerNet(1, 1000, T.shape[1])
+
+
+T = torch.from_numpy(T).type(torch.float)
+X = torch.linspace(0, 1, T.shape[0]).reshape(-1,1)
 dataset = torch.utils.data.TensorDataset(X, T)
 
 dataloader = torch.utils.data.DataLoader(dataset=dataset, batch_size=200, shuffle=True)
 
 loss_fn = torch.nn.MSELoss(reduction='mean')
-optimizer = torch.optim.Adagrad(net.parameters(), lr=1e-4)
+optimizer = torch.optim.Adagrad(net.parameters(), lr=1e-3)
 
 
-# exit()
-
-I = np.arange(norm_waveforms.shape[0])
 
 Ly = []
 Lx = [0]
@@ -131,7 +124,11 @@ net.train()
 for epoch in range(1000):
   for x, t in dataloader:
     y = net(x)
-    loss = loss_fn(t, y)
+
+    l1 = loss_fn(t[:-2], y[:-2])
+    l2 = loss_fn(t[-2], y[-2])
+    l3 = loss_fn(t[-1], y[-1])
+    loss = l1 + l2 + l3
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -141,14 +138,6 @@ for epoch in range(1000):
     Lx.append(Lx[-1] + 1)
 
 
-# for step in range(100000):
-#   i = np.random.choice(I)
-#   y = net.forward(X[i])
-#   loss = net.backward(T[i])
-#   if step % 1000 == 0:
-#     print(i, 'loss: ', loss.data)
-#     Ly.append(loss.data)
-#     Lx.append(step)
 
 
 fig = get_loss_plot(Lx, Ly)
@@ -181,15 +170,17 @@ fig.update_yaxes(showline=False, showgrid=False, zerolinewidth=1, zerolinecolor=
 fig.add_trace(
   go.Surface(
     name="Original Waveforms",
-    z=norm_waveforms,
+    z=norm_waveforms[:,:-2],
     showlegend=True
   )
 )
 
 net.eval()
 nnresult=[]
-for i in I:
-  nnresult.append(net.forward(X[i]).detach().numpy())
+for i in np.arange(T.shape[0]):
+  res = net.forward(X[i]).detach().numpy()
+  nnresult.append(res[:-2] * res[-1] * max_amp)
+nnresult = np.array(nnresult)
 
 fig.add_trace(
   go.Surface(
@@ -202,7 +193,7 @@ fig.add_trace(
 fig.add_trace(
   go.Surface(
     name="errors", # <|<|<|<|<|<|<|<|<|<|<|<|
-    z=norm_waveforms - nnresult,
+    z=norm_waveforms[:,:-2] - nnresult[:,:-2],
     showlegend=True
   )
 )
