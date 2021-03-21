@@ -67,16 +67,17 @@ average_waveform, orig_waveforms, norm_waveforms = get_pcs(Xpc, W)
 
 '''============================================================================'''
 
-FONT = dict(
-    family="Latin Modern Roman",
-    color="black",
-    size=13.3333
-  )
+
 
 
 '''============================================================================'''
 '''                               PLOT WAVEFORM                                '''
 '''============================================================================'''
+FONT = dict(
+    family="Latin Modern Roman",
+    color="black",
+    size=13.3333
+  )
 fig = go.Figure()
 fig.layout.template ="plotly_white" 
 fig.update_layout(
